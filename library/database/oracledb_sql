@@ -19,7 +19,7 @@ import datetime
 
 DOCUMENTATION = '''
 ---
-module: oracle_sql
+module: oracledb_sql
 version_added: devel
 short_description: execute SQL on an oracle database
 description:
