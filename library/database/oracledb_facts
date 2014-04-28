@@ -1,0 +1,100 @@
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+
+# Ansible is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# Ansible is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with Ansible.  If not, see <http://www.gnu.org/licenses/>.
+
+import os
+import datetime
+
+DOCUMENTATION = '''
+---
+module: oracledb_facts
+version_added: devel
+short_description: gather facts about oracle dbs
+description:
+   - Gather facts about all oracle database detected on the host (via oratab). For
+     databases that are open, this module will also query each database for some
+     additional basic facts.
+author: Jeremy Schneider
+'''
+
+EXAMPLES = '''
+# Gather facts for 'dbserver'
+ansible dbserver -m oracledb_facts
+'''
+
+
+def run_sql(module, sid, oracle_home, sql):
+    input ="whenever sqlerror exit failure; \n whenever oserror exit failure; \n"
+    input+="set pagesize 0; \n set feedback off; \n"
+    input+="connect / as sysdba \n"
+    input+="%s \n\n"
+    input+="exit \n"
+
+    os.environ['ORACLE_SID']=sid
+    os.environ['ORACLE_HOME']=oracle_home
+    os.environ['LD_LIBRARY_PATH']="%s/lib" % oracle_home
+    return module.run_command("%s/bin/sqlplus -S /nolog" % oracle_home, data=input % sql)
+
+
+def main():
+    module = AnsibleModule(
+      argument_spec = dict(),
+      supports_check_mode=True
+    )
+
+    if os.path.exists("/etc/oratab"):
+      oratab="/etc/oratab"
+    else:
+      if os.path.exists("/var/opt/oracle/oratab"):
+        oratab="/var/opt/oracle/oratab"
+      else:
+        module.fail_json(msg="Could not find oratab in /etc or /var/opt/oracle")
+
+    sids = dict()
+    for line in open('/etc/oratab','r'):
+      if line.startswith("#"):
+        continue
+      items = line.split(":")
+      if len(items)>1 and os.path.exists("%s/bin/sqlplus" % items[1]):
+        rc, out, err = run_sql(module,items[0], items[1], "select status from v$instance;")
+        if rc>0:
+          status = "DOWN"
+        else:
+          status = out.rstrip()
+        sids[items[0]] = dict(oracle_home=items[1],schemas=0,status=status)
+
+    schemas = list()
+    for sid, d in sids.iteritems():
+      if d['status']<>"OPEN":
+        continue
+      rc, out, err = run_sql(module,sid,d['oracle_home'],"select username from dba_users;")
+      if rc==0:
+        for line in out.splitlines():
+          if len(line)>0:
+            schemas.append(dict(schema=line,sid=sid))
+            d['schemas']+=1
+
+    module.exit_json(
+        ansible_facts = dict(
+          sids = sids,
+          schemas = schemas
+        ),
+        out=out,
+        changed     = False
+    )
+
+from ansible.module_utils.basic import *
+main()
+
