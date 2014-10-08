@@ -79,7 +79,7 @@ class ActionModule(object):
                 source = utils.path_dwim(self.runner.basedir, source)
 
 
-        if dest.endswith("/"):
+        if dest.endswith("/"): # CCTODO: Fix path for Windows hosts.
             base = os.path.basename(source)
             dest = os.path.join(dest, base)
 
@@ -87,7 +87,7 @@ class ActionModule(object):
         try:
             resultant = template.template_from_file(self.runner.basedir, source, inject, vault_password=self.runner.vault_pass)
         except Exception, e:
-            result = dict(failed=True, msg=str(e))
+            result = dict(failed=True, msg=type(e).__name__ + ": " + str(e))
             return ReturnData(conn=conn, comm_ok=False, result=result)
 
         local_md5 = utils.md5s(resultant)
@@ -113,19 +113,31 @@ class ActionModule(object):
             xfered = self.runner._transfer_str(conn, tmp, 'source', resultant)
 
             # fix file permissions when the copy is done as a different user
-            if self.runner.sudo and self.runner.sudo_user != 'root':
-                self.runner._low_level_exec_command(conn, "chmod a+r %s" % xfered, tmp)
+            if self.runner.sudo and self.runner.sudo_user != 'root' or self.runner.su and self.runner.su_user != 'root':
+                self.runner._remote_chmod(conn, 'a+r', xfered, tmp)
 
             # run the copy module
-            module_args = "%s src=%s dest=%s original_basename=%s" % (module_args, pipes.quote(xfered), pipes.quote(dest), pipes.quote(os.path.basename(source)))
+            new_module_args = dict(
+               src=xfered,
+               dest=dest,
+               original_basename=os.path.basename(source),
+            )
+            module_args_tmp = utils.merge_module_args(module_args, new_module_args)
 
             if self.runner.noop_on_check(inject):
                 return ReturnData(conn=conn, comm_ok=True, result=dict(changed=True), diff=dict(before_header=dest, after_header=source, before=dest_contents, after=resultant))
             else:
-                res = self.runner._execute_module(conn, tmp, 'copy', module_args, inject=inject, complex_args=complex_args)
+                res = self.runner._execute_module(conn, tmp, 'copy', module_args_tmp, inject=inject, complex_args=complex_args)
                 if res.result.get('changed', False):
                     res.diff = dict(before=dest_contents, after=resultant)
                 return res
         else:
+            # if we're running in check mode, we still want the file module
+            # to execute, since we can't know if anything would be changed here,
+            # so we inject the check mode param into the module args and rely on
+            # the file module to report its changed status
+            if self.runner.noop_on_check(inject):
+                new_module_args = dict(CHECKMODE=True)
+                module_args = utils.merge_module_args(module_args, new_module_args)
             return self.runner._execute_module(conn, tmp, 'file', module_args, inject=inject, complex_args=complex_args)
 

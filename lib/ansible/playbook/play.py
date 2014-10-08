@@ -21,6 +21,7 @@ from ansible.utils.template import template
 from ansible import utils
 from ansible import errors
 from ansible.playbook.task import Task
+from ansible.module_utils.splitter import split_args, unquote
 import ansible.constants as C
 import pipes
 import shlex
@@ -44,7 +45,7 @@ class Play(object):
        'hosts', 'name', 'vars', 'vars_prompt', 'vars_files',
        'tasks', 'handlers', 'remote_user', 'user', 'port', 'include', 'accelerate', 'accelerate_port', 'accelerate_ipv6',
        'sudo', 'sudo_user', 'connection', 'tags', 'gather_facts', 'serial',
-       'any_errors_fatal', 'roles', 'pre_tasks', 'post_tasks', 'max_fail_percentage',
+       'any_errors_fatal', 'roles', 'role_names', 'pre_tasks', 'post_tasks', 'max_fail_percentage',
        'su', 'su_user', 'vault_password'
     ]
 
@@ -55,7 +56,7 @@ class Play(object):
 
         for x in ds.keys():
             if not x in Play.VALID_KEYS:
-                raise errors.AnsibleError("%s is not a legal parameter in an Ansible Playbook" % x)
+                raise errors.AnsibleError("%s is not a legal parameter at this level in an Ansible Playbook" % x)
 
         # allow all playbook keys to be set by --extra-vars
         self.vars             = ds.get('vars', {})
@@ -73,6 +74,13 @@ class Play(object):
             self.tags = self.tags.split(",")
         elif type(self.tags) != list:
             self.tags = []
+
+        # make sure we have some special internal variables set
+        self.vars['playbook_dir'] = os.path.abspath(self.basedir)
+        if self.playbook.inventory.basedir() is not None:
+            self.vars['inventory_dir'] = self.playbook.inventory.basedir()
+        if self.playbook.inventory.src() is not None:
+            self.vars['inventory_file'] = self.playbook.inventory.src()
 
         # We first load the vars files from the datastructure
         # so we have the default variables to pass into the roles
@@ -145,9 +153,6 @@ class Play(object):
 
         load_vars = {}
         load_vars['role_names'] = ds.get('role_names',[])
-        load_vars['playbook_dir'] = self.basedir
-        if self.playbook.inventory.basedir() is not None:
-            load_vars['inventory_dir'] = self.playbook.inventory.basedir()
 
         self._tasks      = self._load_tasks(self._ds.get('tasks', []), load_vars)
         self._handlers   = self._load_tasks(self._ds.get('handlers', []), load_vars)
@@ -294,26 +299,24 @@ class Play(object):
                             else:
                                 self.included_roles.append(dep)
 
+                        def _merge_conditional(cur_conditionals, new_conditionals):
+                            if isinstance(new_conditionals, (basestring, bool)):
+                                cur_conditionals.append(new_conditionals)
+                            elif isinstance(new_conditionals, list):
+                                cur_conditionals.extend(new_conditionals)
+
                         # pass along conditionals from roles to dep roles
-                        if type(role) is dict:
-                            if 'when' in passed_vars:
-                                if 'when' in dep_vars:
-                                    tmpcond = []
+                        passed_when = passed_vars.get('when')
+                        role_when = role_vars.get('when')
+                        dep_when = dep_vars.get('when')
 
-                                    if type(passed_vars['when']) is str:
-                                        tmpcond.append(passed_vars['when'])
-                                    elif type(passed_vars['when']) is list:
-                                        tmpcond += passed_vars['when']
+                        tmpcond = []
+                        _merge_conditional(tmpcond, passed_when)
+                        _merge_conditional(tmpcond, role_when)
+                        _merge_conditional(tmpcond, dep_when)
 
-                                    if type(dep_vars['when']) is str:
-                                        tmpcond.append(dep_vars['when'])
-                                    elif type(dep_vars['when']) is list:
-                                        tmpcond += dep_vars['when']
-
-                                    if len(tmpcond) > 0:
-                                        dep_vars['when'] = tmpcond
-                                else:
-                                    dep_vars['when'] = passed_vars['when']
+                        if len(tmpcond) > 0:
+                            dep_vars['when'] = tmpcond
 
                         self._build_role_dependencies([dep], dep_stack, passed_vars=dep_vars, level=level+1)
                         dep_stack.append([dep,dep_path,dep_vars,dep_defaults_data])
@@ -334,7 +337,6 @@ class Play(object):
                 if new_default_vars:
                     if type(new_default_vars) != dict:
                         raise errors.AnsibleError("%s must be stored as dictionary/hash: %s" % (filename, type(new_default_vars)))
-
                     default_vars = utils.combine_vars(default_vars, new_default_vars)
 
         return default_vars
@@ -527,8 +529,7 @@ class Play(object):
                 task_vars['_original_file'] = original_file
 
             if 'include' in x:
-                tokens = shlex.split(str(x['include']))
-                items = ['']
+                tokens = split_args(str(x['include']))
                 included_additional_conditions = list(additional_conditions)
                 include_vars = {}
                 for k in x:
@@ -541,11 +542,10 @@ class Play(object):
                     elif k.startswith("when_"):
                         utils.deprecated("\"when_<criteria>:\" is a removed deprecated feature, use the simplified 'when:' conditional directly", None, removed=True)
                     elif k == 'when':
-                        if type(x[k]) is str:
-                            included_additional_conditions.insert(0, x[k])
+                        if isinstance(x[k], (basestring, bool)):
+                            included_additional_conditions.append(x[k])
                         elif type(x[k]) is list:
-                            for i in x[k]:
-                                included_additional_conditions.insert(0, i)
+                            included_additional_conditions.extend(x[k])
                     elif k in ("include", "vars", "default_vars", "sudo", "sudo_user", "role_name", "no_log"):
                         continue
                     else:
@@ -564,31 +564,27 @@ class Play(object):
                 if 'vars' in x:
                     task_vars = utils.combine_vars(task_vars, x['vars'])
 
-                if 'when' in x:
-                    included_additional_conditions.append(x['when'])
-
                 new_role = None
                 if 'role_name' in x:
                     new_role = x['role_name']
 
-                for item in items:
-                    mv = task_vars.copy()
-                    mv['item'] = item
-                    for t in tokens[1:]:
-                        (k,v) = t.split("=", 1)
-                        mv[k] = template(self.basedir, v, mv)
-                    dirname = self.basedir
-                    if original_file:
-                        dirname = os.path.dirname(original_file)
-                    include_file = template(dirname, tokens[0], mv)
-                    include_filename = utils.path_dwim(dirname, include_file)
-                    data = utils.parse_yaml_from_file(include_filename, vault_password=self.vault_password)
-                    if 'role_name' in x and data is not None:
-                        for y in data:
-                            if isinstance(y, dict) and 'include' in y:
-                                y['role_name'] = new_role
-                    loaded = self._load_tasks(data, mv, default_vars, included_sudo_vars, list(included_additional_conditions), original_file=include_filename, role_name=new_role)
-                    results += loaded
+                mv = task_vars.copy()
+                for t in tokens[1:]:
+                    (k,v) = t.split("=", 1)
+                    v = unquote(v)
+                    mv[k] = template(self.basedir, v, mv)
+                dirname = self.basedir
+                if original_file:
+                    dirname = os.path.dirname(original_file)
+                include_file = template(dirname, tokens[0], mv)
+                include_filename = utils.path_dwim(dirname, include_file)
+                data = utils.parse_yaml_from_file(include_filename, vault_password=self.vault_password)
+                if 'role_name' in x and data is not None:
+                    for y in data:
+                        if isinstance(y, dict) and 'include' in y:
+                            y['role_name'] = new_role
+                loaded = self._load_tasks(data, mv, default_vars, included_sudo_vars, list(included_additional_conditions), original_file=include_filename, role_name=new_role)
+                results += loaded
             elif type(x) == dict:
                 task = Task(
                     self, x,
@@ -785,7 +781,7 @@ class Play(object):
             """ update a host's varscache with new var data """
 
             data = utils.combine_vars(inject, data)
-            self.playbook.VARS_CACHE[host].update(data)
+            self.playbook.VARS_CACHE[host] = utils.combine_vars(self.playbook.VARS_CACHE.get(host, {}), data)
             self.playbook.callbacks.on_import_for_host(host, filename4)
 
         def process_files(filename, filename2, filename3, filename4, host=None):
@@ -855,5 +851,4 @@ class Play(object):
 
         # finally, update the VARS_CACHE for the host, if it is set
         if host is not None:
-            self.playbook.VARS_CACHE[host].update(self.vars)
             self.playbook.VARS_CACHE[host].update(self.playbook.extra_vars)
