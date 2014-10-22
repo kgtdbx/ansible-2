@@ -1,0 +1,144 @@
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+
+# Ansible is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# Ansible is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with Ansible.  If not, see <http://www.gnu.org/licenses/>.
+
+import os
+import datetime
+
+DOCUMENTATION = '''
+---
+module: weblogic_bsu
+version_added: devel
+short_description: apply patch to weblogic 
+options:
+  AdminServerURL:
+    description:
+      - Admin server URL (t3 or http) 
+    required: true
+    default: null
+
+  Action:
+    description:
+      - install / remove / check
+
+author: Marcin Przepiorowski 
+'''
+
+EXAMPLES = '''
+# Show active sessions for instance RAC1 on 'dbserver'
+'''
+
+def bsu_check(module):
+    
+    startd, rc, weblogic_patch, err, endd, delta,changed  = (0,1,'','',0,0,False)
+    mw_home = module.params['mw_home'].rstrip('/') 
+    req_patch_id = module.params['patch_id'].strip()
+
+    wls_server_path = mw_home + "/wlserver_10.3"
+    bsu_path = mw_home + "/utils/bsu"
+    
+    startd = datetime.datetime.now()
+    rc, out, err = module.run_command(["./bsu.sh","-view","-status=applied","-prod_dir=" + wls_server_path ], check_rc=True, cwd=bsu_path)
+    endd = datetime.datetime.now()
+    delta = endd - startd
+    # return if error
+    if (rc <> 0):
+       return (startd, rc, out, err, endd, delta, changed)
+
+    # set rc to 1 to fail if there is no patch
+    rc = 1
+    for i in out.split("\n"):
+       if ( "Patch ID:" in i):
+          temp_patch_id=i.split(':')[1]
+          weblogic_patch=temp_patch_id.split()[0].strip()
+	  #print "test " + weblogic_patch + " do " +req_patch_id
+          if (weblogic_patch == req_patch_id):
+	     #print "jest match " + weblogic_patch + " do " +req_patch_id
+             # patch id found
+             rc = 0
+        
+
+       
+    return (startd, rc, out, err, endd, delta, changed) 
+ 
+
+def wlst_command(module,username, password, adminServerUrl, command):
+
+    os.environ['WLST_PROPERTIES']="-Dweblogic.security.TrustKeyStore=DemoTrust"
+
+    input="connect('" + username + "','" + password + "','" + adminServerUrl + "')\n"
+    input+=command
+    input+="exit(); \n"
+
+    startd = datetime.datetime.now()
+    rc, out, err = module.run_command("/u01/app/oracle/MW1204/wlserver_10.3/common/bin/wlst.sh", data=input, check_rc=True)
+    endd = datetime.datetime.now()
+    delta = endd - startd
+
+    if out is None:
+        out = ''
+    if err is None:
+        err = ''
+
+    y = ''
+
+    for i in out.split("\n"):
+    #    if ( (not ("<Notice>" in i)) and (not ("<Info>" in i)) and (not ("CLASSPATH" in i)) ):
+        if ( "PRINTME|" in i):
+           y+=i.split('|')[1]
+           y+="\n"
+
+    return (startd, rc, y, err, endd, delta) 
+
+
+
+def main():
+
+    module = AnsibleModule(
+        argument_spec = dict(
+            operation = dict(required=True, choices=['install', 'remove', 'check']),
+            mw_home = dict(required=True),
+            patch_id = dict(required=True)
+        ),
+    )
+
+    startd, rc, y, err, endd, delta = (0,0,'','',0,0)
+
+
+    mw_home = module.params['mw_home']
+    operation = module.params['operation']
+    patch_id = module.params['patch_id']
+
+
+
+    #startd, rc, y, err, endd, delta = wlst_command(module, 'weblogic','Oracle42','t3s://dg2.localdomain:7102', command)
+    
+    if (operation == 'check'):
+       startd, rc, y, err, endd, delta, changed = bsu_check(module) 
+
+
+    module.exit_json(
+        stdout      = y,
+        stderr      = err.rstrip("\r\n"),
+        rc          = rc,
+        start       = str(startd),
+        end         = str(endd),
+        delta       = str(delta),
+        changed     = changed 
+    )
+
+from ansible.module_utils.basic import *
+main()
+
