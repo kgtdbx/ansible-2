@@ -1,0 +1,311 @@
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+
+# Ansible is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# Ansible is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with Ansible.  If not, see <http://www.gnu.org/licenses/>.
+
+import os
+import datetime
+
+DOCUMENTATION = '''
+---
+module: weblogic_ad
+version_added: devel
+short_description: apply patch to weblogic
+options:
+  AdminServerURL:
+    description:
+      - Admin server URL (t3 or http)
+    required: true
+    default: null
+
+  Action:
+    description:
+      - install / remove / check
+
+author: Marcin Przepiorowski
+'''
+
+EXAMPLES = '''
+# Show active sessions for instance RAC1 on 'dbserver'
+'''
+
+def wlst_command(module, command):
+
+    os.environ['WLST_PROPERTIES']="-Dweblogic.security.SSL.ignoreHostnameVerification=true -Dweblogic.security.TrustKeyStore=DemoTrust "
+
+    startd, rc, out, err, endd, delta,changed  = (0,1,'','',0,0,False)
+
+    mw_home = module.params['mw_home'].rstrip('/')
+    adminServerUrl = module.params['adminServerUrl'].strip()
+#    adminPort = module.params['adminPort'].strip()
+    username = module.params['username'].strip()
+    password = module.params['password'].strip()
+
+    wlst_path = mw_home + "/wlserver_10.3/common/bin/wlst.sh"
+    wlst_arguments = "-skipWLSModuleScanning"
+
+#    adminServerUrl = 't3s://' + adminServer + ':' + adminPort
+
+
+    input="connect('" + username + "','" + password + "','" + adminServerUrl + "')\n"
+    input+=command
+    input+="\n"
+    input+="exit(); \n"
+
+    startd = datetime.datetime.now()
+    rc, out, err = module.run_command( [wlst_path, wlst_arguments], data=input, check_rc=True)
+    endd = datetime.datetime.now()
+    delta = endd - startd
+
+    if out is None:
+        out = ''
+    if err is None:
+        err = ''
+
+    return (startd, rc, out, err, endd, delta, False)
+
+
+def add_restart_reqired():
+    command ="s=domainRuntimeService.lookupServerRuntime('AdminServer')\n"
+    command+="print ('RESTART|' + str(s.isRestartRequired()) )\n"
+    command+="\n"
+    return command
+
+
+def check_restart_reqired(out):
+    rr = 9
+    for i in out.split("\n"):
+        if ( "RESTART|" in i ):
+           rr = i.split('|')[1];
+    
+    return rr
+
+
+def check_provider(module):
+
+    ad_provider_name = module.params['ad_provider_name']
+
+    startd, rc, y, err, endd, delta = (0,0,'','',0,0)
+
+    command= "realm = cmo.getSecurityConfiguration().getDefaultRealm()\n"
+    command+="advalidator = realm.lookupAuthenticationProvider('" + ad_provider_name + "')\n"
+    command+="if advalidator:\n"
+    command+="   print ('PRINTME|EXIST')\n"
+    command+="else:\n"
+    command+="   print ('PRINTME|ERROR')\n"
+    command+="\n"
+    command+=add_restart_reqired()
+
+    startd, rc, out, err, endd, delta, changed = wlst_command(module, command)
+
+    print "IN  ----------------------------"
+    print command + "\n"
+    print "OUT ----------------------------"
+    print out + "\n"
+    print "OUT ----------------------------"
+
+
+    y = 'AD provider doesn''t exist'
+    rc = 1
+
+    for i in out.split("\n"):
+    #    if ( (not ("<Notice>" in i)) and (not ("<Info>" in i)) and (not ("CLASSPATH" in i)) ):
+        if ( "PRINTME|EXIST" in i):
+           y='AD provider exist'
+           rc=0
+
+    rr = check_restart_reqired(out)
+
+    return (startd, rc, y, err, endd, delta, changed,rr)
+
+def generate_ad_setting(module):
+
+    ad_setControlFlag = module.params['ad_setControlFlag']
+    ad_setGroupBaseDN = module.params['ad_setGroupBaseDN']
+    ad_setUserBaseDN = module.params['ad_setUserBaseDN']
+    ad_setUserFromNameFilter = module.params['ad_setUserFromNameFilter']
+    ad_setUserNameAttribute = module.params['ad_setUserNameAttribute']
+    ad_setPrincipal = module.params['ad_setPrincipal']
+    ad_password = module.params['ad_password']
+    ad_setPort = module.params['ad_setPort']
+    ad_setHost = module.params['ad_setHost']
+
+    command = ''
+    if ad_setControlFlag:
+       command+="      advalidator.setControlFlag('" + ad_setControlFlag + "')\n"
+    if ad_setGroupBaseDN:
+       command+="      advalidator.setGroupBaseDN('" + ad_setGroupBaseDN + "')\n"
+    if ad_setUserBaseDN:
+       command+="      advalidator.setUserBaseDN('" + ad_setUserBaseDN + "')\n"
+    if ad_setUserFromNameFilter:
+       command+="      advalidator.setUserFromNameFilter('" + ad_setUserFromNameFilter + "')\n"
+    if ad_setUserNameAttribute:
+       command+="      advalidator.setUserNameAttribute('" + ad_setUserNameAttribute + "')\n"
+    if ad_setPrincipal:
+       command+="      advalidator.setPrincipal('" + ad_setPrincipal + "')\n"
+    if ad_password:
+       command+="      advalidator.setCredential('" + ad_password + "')\n"
+    if ad_setPort:
+       command+="      advalidator.setPort(" + str(ad_setPort) + ")\n"
+    if ad_setHost:
+       command+="      advalidator.setHost('" + ad_setHost + "')\n"
+
+    return command
+
+
+def remove_provider(module):
+
+    ad_provider_name = module.params['ad_provider_name']
+
+    startd, rc, y, err, endd, delta = (0,0,'','',0,0)
+
+    command ="realm = cmo.getSecurityConfiguration().getDefaultRealm()\n"
+    command+="advalidator = realm.lookupAuthenticationProvider('" + ad_provider_name + "')\n"
+    command+="if not advalidator:\n"
+    command+="   raise Exception('AD provider " + ad_provider_name + " doesn''t exist')\n"
+    command+="else:\n"
+    command+="   edit()\n"
+    command+="   startEdit()\n"
+    command+="   realm = cmo.getSecurityConfiguration().getDefaultRealm()\n"
+    command+="   advalidator = realm.lookupAuthenticationProvider('" + ad_provider_name + "')\n"
+    command+="   realm.destroyAuthenticationProvider(advalidator);\n"
+    command+="   save()\n"
+    command+="   activate(block='true')\n"
+    command+="\n"
+    command+=add_restart_reqired()
+
+    startd, rc, out, err, endd, delta, changed = wlst_command(module, command)
+
+    print command + "\n"
+    print "---------------\n"
+    print out + "\n"
+    print "---------------\n"
+    print "Error |" + err + "|\n"
+
+    if err == '' :
+       rc = 0
+       changed = True
+    else:
+       rc = 1
+
+    rr = check_restart_reqired(out)
+
+    return (startd, rc, y, err, endd, delta, changed, rr)
+
+
+
+def create_provider(module):
+
+    ad_provider_name = module.params['ad_provider_name']
+
+    startd, rc, y, err, endd, delta = (0,0,'','',0,0)
+
+    command ="realm = cmo.getSecurityConfiguration().getDefaultRealm()\n"
+    command+="advalidator = realm.lookupAuthenticationProvider('" + ad_provider_name + "')\n"
+    command+="if advalidator:\n"
+    command+="  raise Exception('AD provider " + ad_provider_name + " exist')\n"
+    command+="else:\n"
+    command+="   edit()\n"
+    command+="   startEdit()\n"
+    command+="   realm = cmo.getSecurityConfiguration().getDefaultRealm()\n"
+    command+="   advalidator = realm.lookupAuthenticationProvider('" + ad_provider_name + "')\n"
+    command+="   if advalidator:\n"
+    command+="      stopEdit('y')\n"
+    command+="      raise Exception('AD provider " + ad_provider_name + " exist')\n"
+    command+="   else:\n"
+    command+="      advalidator = realm.createAuthenticationProvider('" + ad_provider_name + "', 'weblogic.security.providers.authentication.ActiveDirectoryAuthenticator')\n"
+
+    command+=generate_ad_setting(module)
+
+    command+="      save()\n"
+    command+="      activate(block='true')\n"
+    command+="\n"
+    command+=add_restart_reqired()
+
+    startd, rc, out, err, endd, delta, changed = wlst_command(module, command)
+
+    print command + "\n"
+    print "---------------\n"
+    print out + "\n"
+    print "---------------\n"
+    print "Error |" + err + "|\n"
+
+    if err == '' :
+       rc = 0
+    else:
+       rc = 1
+
+    rr = check_restart_reqired(out)
+
+    return (startd, rc, y, err, endd, delta, changed,rr)
+
+
+
+
+
+def main():
+
+    module = AnsibleModule(
+        argument_spec = dict(
+            state = dict(required=True, choices=['absent', 'present', 'check']),
+            mw_home = dict(required=True),
+            adminServerUrl = dict(required=True),
+            username = dict(required=True),
+            password = dict(required=True),
+            ad_provider_name = dict(required=True),
+            ad_setControlFlag = dict(required=False,default='OPTIONAL'),
+            ad_setGroupBaseDN = dict(required=False),
+            ad_setUserBaseDN = dict(required=False),
+            ad_setUserFromNameFilter = dict(required=False),
+            ad_setUserNameAttribute = dict(required=False),
+            ad_setPrincipal = dict(required=False),
+            ad_password = dict(required=False),
+            ad_setPort = dict(required=False),
+            ad_setHost = dict(required=False)
+        ),
+    )
+
+
+    state = module.params['state']
+    ad_setPrincipal = module.params['ad_setPrincipal']
+    ad_password = module.params['ad_password']
+
+    if (state == 'present') and ((not ad_setPrincipal) or (not ad_password)) :
+        module.fail_json(msg="Arguments 'ad_setPrincipal','ad_password' required for state present.")
+
+
+    if state == 'present':
+        startd, rc, y, err, endd, delta, changed, isRestartRequired = create_provider(module)
+    
+    if state == 'absent':
+        startd, rc, y, err, endd, delta, changed, isRestartRequired = remove_provider(module)
+
+    if state == 'check':
+        startd, rc, y, err, endd, delta, changed, isRestartRequired = check_provider(module)
+
+
+
+    module.exit_json(
+        stdout      = y,
+        stderr      = err.rstrip("\r\n"),
+        rc          = rc,
+#        start       = str(startd),
+#        end         = str(endd),
+#        delta       = str(delta),
+        isRestartRequired = isRestartRequired, 
+        changed     = changed
+    )
+
+from ansible.module_utils.basic import *
+main()
