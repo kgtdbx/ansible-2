@@ -109,11 +109,11 @@ def check_provider(module):
 
     startd, rc, out, err, endd, delta, changed = wlst_command(module, command)
 
-    print "IN  ----------------------------"
-    print command + "\n"
-    print "OUT ----------------------------"
-    print out + "\n"
-    print "OUT ----------------------------"
+#    print "IN  ----------------------------"
+#    print command + "\n"
+#    print "OUT ----------------------------"
+#    print out + "\n"
+#    print "OUT ----------------------------"
 
 
     y = 'AD provider doesn''t exist'

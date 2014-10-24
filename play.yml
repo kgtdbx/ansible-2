@@ -1,0 +1,13 @@
+---
+- hosts: localhost 
+  tasks:
+    - name: test connection
+      ping:
+
+    - name: check ad 
+      weblogic_ad: 
+        state=check mw_home=/u01/app/oracle/Middleware username=weblogic password=0racle42 adminServerUrl=t3://localhost:7001 ad_provider_name=BB ad_setPort=33 ad_setPrincipal=user ad_password=aaaa
+      register: check_res 
+
+    - name: debug
+      debug: var=check_res.isRestartRequired
