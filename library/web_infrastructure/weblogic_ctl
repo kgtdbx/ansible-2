@@ -1,0 +1,216 @@
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+
+# Ansible is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# Ansible is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with Ansible.  If not, see <http://www.gnu.org/licenses/>.
+
+import os
+import datetime
+
+DOCUMENTATION = '''
+---
+module: weblogic_ctl
+version_added: devel
+short_description: control weblogic servers 
+options:
+    state        - requested state of Weblogic server - started, stopped, restarted
+    mw_home      - Middleware home 
+    username     - Node Manager user
+    password     - Node Manager password
+    nm_port      - Node Manager port (default 5556)
+    domain       - Weblogic server domain
+    server_name  - Weblogic server name
+             
+
+
+author: Marcin Przepiorowski
+'''
+
+EXAMPLES = '''
+
+'''
+
+def wlst_command(module, command):
+
+    os.environ['WLST_PROPERTIES']="-Dweblogic.security.SSL.ignoreHostnameVerification=true -Dweblogic.security.TrustKeyStore=DemoTrust "
+
+    rc, out, err = (0,'','')
+
+    mw_home = module.params['mw_home'].rstrip('/')
+    username = module.params['username'].strip()
+    password = module.params['password'].strip()
+    domain = module.params['domain'].strip()
+    nm_port = module.params['nm_port']
+
+    wlst_path = mw_home + "/wlserver_10.3/common/bin/wlst.sh"
+    wlst_arguments = "-skipWLSModuleScanning"
+
+    input="nmConnect('" + username + "','" + password + "','localhost'," + str(nm_port) + ",'" + domain + "')\n"
+    input+=command
+    input+="\n"
+
+
+    #print "---------------\n"
+    #print input + "\n"
+    #print "---------------\n"
+
+
+    rc, out, err = module.run_command( [wlst_path, wlst_arguments], data=input )
+    
+    #print "---------------\n"
+    #print 'Error code ' + str(rc)  + "\n"
+    #print "---------------\n"
+
+    return (rc, out, err)
+
+
+def start_server(module):
+
+    server_name = module.params['server_name']
+    rc, out, err, changed  = (0,'','',False)
+
+    # WLST command to start server
+    command ="rc=-999\n"
+    command+="changed=0\n"
+    command+="cur_state=nmServerStatus('" + server_name + "')\n"
+    command+="\n"
+    command+="if ( cur_state != 'RUNNING' ):\n"
+    command+="   nmStart('" + server_name + "')\n"
+    command+="   changed=1\n"
+    command+="\n"
+    command+="cur_state=nmServerStatus('" + server_name + "')\n"
+    command+="if ( cur_state != 'RUNNING' ):\n"
+    command+="   rc=1+changed*10\n"
+    command+="else:\n"
+    command+="   rc=0+changed*10\n"
+    command+="\n"
+    command+="exit('y',rc)\n"
+
+    # Run WLST command
+    rc, out, err = wlst_command(module, command)
+
+#    print command + "\n"
+#    print "---------------\n"
+#    print out + "\n"
+#    print "---------------\n"
+#    print "Error |" + err + "|\n"
+
+    # Translate WLST script output code into Ansible RC and CHANGED variables    
+    if rc == 0:
+       rc = 0
+       changed = False
+    
+    if rc == 10:
+       rc = 0
+       changed = True 
+    
+    if rc == 1:
+       rc = 1
+       changed = False
+    
+    if rc==11:
+       rc = 1
+       changed = False 
+
+    return (rc, out, err, changed)
+
+def stop_server(module):
+
+    server_name = module.params['server_name']
+    rc, out, err, changed  = (0,'','',False)
+
+    # WLST command to start server
+    command ="rc=-999\n"
+    command+="changed=0\n"
+    command+="cur_state=nmServerStatus('" + server_name + "')\n"
+    command+="\n"
+    command+="if ( cur_state != 'SHUTDOWN' ):\n"
+    command+="   nmKill('" + server_name + "')\n"
+    command+="   changed=1\n"
+    command+="\n"
+    command+="cur_state=nmServerStatus('" + server_name + "')\n"
+    command+="if ( cur_state != 'SHUTDOWN' ):\n"
+    command+="   rc=1+changed*10\n"
+    command+="else:\n"
+    command+="   rc=0+changed*10\n"
+    command+="\n"
+    command+="exit('y',rc)\n"
+
+    # Run WLST command
+    rc, out, err = wlst_command(module, command)
+
+    #print command + "\n"
+    #print "---------------\n"
+    #print out + "\n"
+    #print "---------------\n"
+    #print "Error |" + err + "|\n"
+
+    # Translate WLST script output code into Ansible RC and CHANGED variables    
+    if rc == 0:
+       rc = 0
+       changed = False
+
+    if rc == 10:
+       rc = 0
+       changed = True
+
+    if rc == 1:
+       rc = 1
+       changed = False
+
+    if rc==11:
+       rc = 1
+       changed = False
+
+    return (rc, out, err, changed)
+
+
+def main():
+
+    module = AnsibleModule(
+        argument_spec = dict(
+            state = dict(required=True, choices=[ 'started', 'stopped', 'restarted' ]),
+            mw_home = dict(required=True),
+            username = dict(required=True),
+            password = dict(required=True),
+            domain   = dict(required=True),
+            server_name = dict(required=True),
+            nm_port  = dict(required=False,default=5556)
+        ),
+    )
+
+
+
+    state = module.params['state']
+
+    if state == 'started':
+        rc, out, err, changed = start_server(module)
+    if state == 'stopped':
+        rc, out, err, changed = stop_server(module)
+    if state == 'restarted':
+        rc, out, err, changed = stop_server(module)
+        if rc!=0:
+           module.fail_json(msg="Can't stop server")
+        rc, out, err, changed = start_server(module)
+
+    module.exit_json(
+        stdout      = out,
+        stderr      = err.rstrip("\r\n"),
+        rc          = rc,
+        changed     = changed
+    )
+
+from ansible.module_utils.basic import *
+main()
+
+

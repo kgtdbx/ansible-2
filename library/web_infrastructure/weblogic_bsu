@@ -74,35 +74,6 @@ def bsu_check(module):
     return (startd, rc, out, err, endd, delta, changed) 
  
 
-def wlst_command(module,username, password, adminServerUrl, command):
-
-    os.environ['WLST_PROPERTIES']="-Dweblogic.security.TrustKeyStore=DemoTrust"
-
-    input="connect('" + username + "','" + password + "','" + adminServerUrl + "')\n"
-    input+=command
-    input+="exit(); \n"
-
-    startd = datetime.datetime.now()
-    rc, out, err = module.run_command("/u01/app/oracle/MW1204/wlserver_10.3/common/bin/wlst.sh", data=input, check_rc=True)
-    endd = datetime.datetime.now()
-    delta = endd - startd
-
-    if out is None:
-        out = ''
-    if err is None:
-        err = ''
-
-    y = ''
-
-    for i in out.split("\n"):
-    #    if ( (not ("<Notice>" in i)) and (not ("<Info>" in i)) and (not ("CLASSPATH" in i)) ):
-        if ( "PRINTME|" in i):
-           y+=i.split('|')[1]
-           y+="\n"
-
-    return (startd, rc, y, err, endd, delta) 
-
-
 
 def main():
 
@@ -110,7 +81,8 @@ def main():
         argument_spec = dict(
             operation = dict(required=True, choices=['install', 'remove', 'check']),
             mw_home = dict(required=True),
-            patch_id = dict(required=True)
+            patch_id = dict(required=True),
+            src = dict(required=True)
         ),
     )
 

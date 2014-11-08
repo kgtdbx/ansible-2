@@ -6,8 +6,51 @@
 
     - name: check ad 
       weblogic_ad: 
-        state=check mw_home=/u01/app/oracle/Middleware username=weblogic password=0racle42 adminServerUrl=t3://localhost:7001 ad_provider_name=BB ad_setPort=33 ad_setPrincipal=user ad_password=aaaa
+        state=check mw_home=/u01/app/oracle/Middleware username=weblogic password=0racle42 adminServerUrl=t3://localhost:7001 provider_name=DefaultAuthenticator 
       register: check_res 
+
+    - name: remove ad
+      weblogic_ad:
+        state=absent
+        mw_home=/u01/app/oracle/Middleware
+        username=weblogic
+        password=0racle42
+        adminServerUrl=t3://localhost:7001
+        force=yes
+        provider_name=ActiveDirectory_TEST
+
+    - name: add ad 
+      weblogic_ad: 
+        state=present 
+        mw_home=/u01/app/oracle/Middleware 
+        username=weblogic 
+        password=0racle42 
+        adminServerUrl=t3://localhost:7001 
+        provider_name=ActiveDirectory_TEST
+        provider_class='AD'
+        provider_parameters="{ 
+             \"setControlFlag\":\"OPTIONAL\" , 
+             \"setPrincipal\":\"user\" , 
+             \"setCredential\":\"password\" , 
+             \"setPort\":\"1000\" 
+        } "
+        
+
+    - name: add non existing 
+      weblogic_ad: 
+        state=present 
+        mw_home=/u01/app/oracle/Middleware 
+        username=weblogic 
+        password=0racle42 
+        adminServerUrl=t3://localhost:7001 
+        provider_name="Non Existing"
+        provider_class='weblogic.nonexisting_class'
+        provider_parameters="{ 
+             \"setControlFlag\":\"OPTIONAL\" , 
+             \"setPrincipal\":\"user\" , 
+             \"setCredential\":\"password\" , 
+             \"setPort\":\"1000\" 
+        } "
 
     - name: debug
       debug: var=check_res.isRestartRequired

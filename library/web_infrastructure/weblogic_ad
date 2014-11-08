@@ -27,24 +27,99 @@ options:
     description:
       - Admin server URL (t3 or http)
     required: true
+    default: null 
+
+  state:
+    description: required state of provider [ present, absent, check ]
+    required: true
     default: null
+
+  mw_home:
+    description: Middleware home 
+    required: true
+    default: /u01/app/oracle/Middleware 
+  
+  username:
+    description: domain username 
+    required: true
+    default: null 
+  
+  password:
+    description: domain password 
+    required: true
+    default: null 
+  
+  provider_name:
+    description: provider name 
+    required: true
+    default: null 
+  
+  provider_class:
+    description: provider class ( AD is a special name translated into Weblogic class ) 
+    required: false 
+    default: null 
+
+  provider_parameters:
+    description: provider parameters - weblogic provider parameters
+    required: false 
+    default: null 
+
+  provider_order:
+    description: provider order - weblogic provider order 
+    required: false 
+    default: null 
 
   Action:
     description:
-      - install / remove / check
+      - install / remove / check / orders - authentication providers in Weblogic domain
 
 author: Marcin Przepiorowski
 '''
 
 EXAMPLES = '''
-# Show active sessions for instance RAC1 on 'dbserver'
+    Check if provider exists 
+    - name: check ad
+      weblogic_ad:
+        state=check 
+        mw_home=/u01/app/oracle/Middleware 
+        username=weblogic 
+        password=password
+        adminServerUrl=t3://localhost:7001 
+        provider_name=DefaultAuthenticator
+
+    Remove provider - if force is set to true ignore if provider doesn't exists
+    - name: remove ad
+      weblogic_ad:
+        state=absent
+        mw_home=/u01/app/oracle/Middleware
+        username=weblogic
+        password=password
+        adminServerUrl=t3://localhost:7001
+        force=yes
+        provider_name=ActiveDirectory_TEST
+
+    Add provider
+    - name: add ad
+      weblogic_ad:
+        state=present
+        mw_home=/u01/app/oracle/Middleware
+        username=weblogic
+        password=password
+        adminServerUrl=t3://localhost:7001
+        provider_name=ActiveDirectory_TEST
+        provider_class='AD'
+        provider_parameters="{
+             \"setControlFlag\":\"OPTIONAL\" ,
+             \"setPrincipal\":\"user\" ,
+             \"setCredential\":\"password\" ,
+             \"setPort\":\"1000\"
+        } "
 '''
 
 def wlst_command(module, command):
 
     os.environ['WLST_PROPERTIES']="-Dweblogic.security.SSL.ignoreHostnameVerification=true -Dweblogic.security.TrustKeyStore=DemoTrust "
-
-    startd, rc, out, err, endd, delta,changed  = (0,1,'','',0,0,False)
+    rc, out, err = (0,'','')
 
     mw_home = module.params['mw_home'].rstrip('/')
     adminServerUrl = module.params['adminServerUrl'].strip()
@@ -57,19 +132,21 @@ def wlst_command(module, command):
     input="connect('" + username + "','" + password + "','" + adminServerUrl + "')\n"
     input+=command
     input+="\n"
-    input+="exit(); \n"
 
-    startd = datetime.datetime.now()
-    rc, out, err = module.run_command( [wlst_path, wlst_arguments], data=input, check_rc=True)
-    endd = datetime.datetime.now()
-    delta = endd - startd
 
-    if out is None:
-        out = ''
-    if err is None:
-        err = ''
+    #print "---------------\n"
+    #print input + "\n"
+    #print "---------------\n"
 
-    return (startd, rc, out, err, endd, delta, False)
+
+    rc, out, err = module.run_command( [wlst_path, wlst_arguments], data=input )
+    
+    #print "---------------\n"
+    #print 'Error code ' + str(rc)  + "\n"
+    #print "---------------\n"
+
+    return (rc, out, err)
+
 
 
 def add_restart_reqired():
@@ -84,7 +161,7 @@ def check_restart_reqired(out):
     for i in out.split("\n"):
         if ( "RESTART|" in i ):
            rr = i.split('|')[1];
-    
+
     return rr
 
 
@@ -92,18 +169,18 @@ def check_provider(module):
 
     provider_name = module.params['provider_name']
 
-    startd, rc, y, err, endd, delta = (0,0,'','',0,0)
+    rc, out, err, changed  = (0,'','',False)
 
     command= "realm = cmo.getSecurityConfiguration().getDefaultRealm()\n"
     command+="provider = realm.lookupAuthenticationProvider('" + provider_name + "')\n"
     command+="if provider:\n"
-    command+="   print ('PRINTME|EXIST')\n"
+    command+="   exit('y',0)\n"
     command+="else:\n"
-    command+="   print ('PRINTME|ERROR')\n"
+    command+="   exit('y',1)\n"
     command+="\n"
     command+=add_restart_reqired()
 
-    startd, rc, out, err, endd, delta, changed = wlst_command(module, command)
+    rc, out, err = wlst_command(module, command)
 
 #    print "IN  ----------------------------"
 #    print command + "\n"
@@ -111,34 +188,35 @@ def check_provider(module):
 #    print out + "\n"
 #    print "OUT ----------------------------"
 
-
-    y = 'AD provider doesn''t exist'
-    rc = 1
-
-    for i in out.split("\n"):
-    #    if ( (not ("<Notice>" in i)) and (not ("<Info>" in i)) and (not ("CLASSPATH" in i)) ):
-        if ( "PRINTME|EXIST" in i):
-           y='AD provider exist'
-           rc=0
-
     rr = check_restart_reqired(out)
 
-    return (startd, rc, y, err, endd, delta, changed,rr)
+    if rc == 0:
+       out='AD provider exist'
+    else:
+       out='AD provider doesn''t exist'
+
+
+    return (rc, out, err, changed,rr)
 
 def generate_prov_setting(module):
 
-    prov_prov_parameters = module.params['prov_parameters']
-    prov_setControlFlag = module.params['prov_setControlFlag']
-
-    # set Control flag - as this is mandatory in this module
+    prov_provider_parameters = module.params['provider_parameters']
     command = ''
-    command+="         provider.setControlFlag('" + prov_setControlFlag + "')\n"
+    
+    # escape special characters in text values
+    specialchars= ['\\','\"','\'']
+    escape = lambda s, escapechar, specialchars: "".join(escapechar + c if c in specialchars or c == escapechar else c for c in s)
 
     # set rest of module paramaters provided as dict module
     # example provider.setPriciple('user')
-                
-    for key, value in prov_prov_parameters.iteritems() :
-       command+="         provider." + key + "('" + value + "')\n"
+
+    if ( prov_provider_parameters != None ):
+       for key, value in prov_provider_parameters.iteritems() :
+          #if (key == 'setPort'):
+          if (value.isdigit()):
+             command+="      provider." + key + "(" + escape(str(value), "\\", specialchars) + ")\n"
+          else:
+             command+="      provider." + key + "('" + escape(str(value), "\\", specialchars) + "')\n"
 
     return command
 
@@ -146,117 +224,179 @@ def generate_prov_setting(module):
 def remove_provider(module):
 
     provider_name = module.params['provider_name']
+    force = module.params['force']
 
-    startd, rc, y, err, endd, delta = (0,0,'','',0,0)
-
-    command ="realm = cmo.getSecurityConfiguration().getDefaultRealm()\n"
+    rc, out, err, changed  = (0,'','',False)
+    
+    command ="edit()\n"
+    command+="startEdit()\n"
+    command+="rc=9\n"
+    command+="realm = cmo.getSecurityConfiguration().getDefaultRealm()\n"
     command+="provider = realm.lookupAuthenticationProvider('" + provider_name + "')\n"
     command+="if not provider:\n"
-    #command+="   raise Exception('AD provider " + provider_name + " doesn''t exist')\n"
     command+="   print >> sys.stderr, 'AD provider " + provider_name + " doesn''t exist'\n"
+    command+="   stopEdit('y')\n"
+    command+="   rc=1\n"
     command+="else:\n"
-    command+="   edit()\n"
-    command+="   startEdit()\n"
-    command+="   realm = cmo.getSecurityConfiguration().getDefaultRealm()\n"
-    command+="   provider = realm.lookupAuthenticationProvider('" + provider_name + "')\n"
     command+="   realm.destroyAuthenticationProvider(provider);\n"
     command+="   save()\n"
     command+="   activate(block='true')\n"
+    command+="   rc=0\n"
     command+="\n"
     command+=add_restart_reqired()
+    command+="\n"
+    command+="exit('y',rc)\n"
 
-    startd, rc, out, err, endd, delta, changed = wlst_command(module, command)
+    rc, out, err = wlst_command(module, command)
 
     #print command + "\n"
     #print "---------------\n"
     #print out + "\n"
     #print "---------------\n"
-    #print "Error |" + err + "|\n"
-
-    if err == '' :
-       rc = 0
-       changed = True
-    else:
-       rc = 1
+    #print "Force |" + force + "|\n"
 
     rr = check_restart_reqired(out)
 
-    return (startd, rc, y, err, endd, delta, changed, rr)
+    # Translate WLST script output code into Ansible RC and CHANGED variables    
+    if rc == 0:
+       rc = 0
+       changed = True    
 
-                
+    if rc == 1:
+       if force:
+          rc = 0
+       else:
+          rc = 1
+       changed = False    
+
+       
+    return (rc, out, err, changed, rr)
+
+
+def change_order(module):
+
+    provider_order = module.params['provider_order']
+    rc, out, err, changed  = (0,'','',False)
+    
+    command ="new_order = " + ",".join( '\'' + p + '\'' for p in  provider_order) + "\n"
+    command+="edit()\n"
+    command+="startEdit()\n"
+    command+="rc=0\n"
+    command+="providers = []\n"
+    command+="realm = cmo.getSecurityConfiguration().getDefaultRealm()\n"
+    command+="for p in new_order:\n"
+    command+="   providers.append(realm.lookupAuthenticationProvider(p))\n"
+    command+="\n"
+    command+="realm.setAuthenticationProviders(providers)\n"
+    command+="save()\n"
+    command+="activate()\n"
+    command+="\n"
+    command+=add_restart_reqired()
+    command+="\n"
+    command+="exit('y',rc)\n"
+
+    rc, out, err = wlst_command(module, command)
+
+#    print "IN  ----------------------------"
+#    print command + "\n"
+#    print "OUT ----------------------------"
+#    print out + "\n"
+#    print "OUT ----------------------------"
+
+    rr = check_restart_reqired(out)
+
+    # Translate WLST script output code into Ansible RC and CHANGED variables    
+    if rc == 0:
+       rc = 0
+       changed = False    
+
+
+    return (rc, out, err, changed, rr)
+
+
 def check_provider_class( class_name ):
     wls_class_name = class_name
-                
+
     if ( class_name == 'AD'):
        wls_class_name = 'weblogic.security.providers.authentication.ActiveDirectoryAuthenticator';
 
     return wls_class_name
 
+
 def create_provider(module):
 
     provider_name = module.params['provider_name']
-    prov_provider_class = module.params['prov_class']
-                
+    prov_provider_class = module.params['provider_class']
+
     prov_provider_class = check_provider_class ( prov_provider_class )
 
-    startd, rc, y, err, endd, delta = (0,0,'','',0,0)
+    rc, out, err, changed  = (0,'','',False)
 
-    command ="realm = cmo.getSecurityConfiguration().getDefaultRealm()\n"
+    command ="edit()\n"
+    command+="startEdit()\n"
+    command+="rc=0\n"
+    command+="realm = cmo.getSecurityConfiguration().getDefaultRealm()\n"
     command+="provider = realm.lookupAuthenticationProvider('" + provider_name + "')\n"
     command+="if provider:\n"
-    command+="  raise Exception('AD provider " + provider_name + " exist')\n"
+    command+="   stopEdit('y')\n"
+    command+="   print >> sys.stderr, 'AD provider " + provider_name + " exist'\n"
+    command+="   rc=1\n"    
     command+="else:\n"
-    command+="   edit()\n"
-    command+="   startEdit()\n"
-    command+="   realm = cmo.getSecurityConfiguration().getDefaultRealm()\n"
-    command+="   provider = realm.lookupAuthenticationProvider('" + provider_name + "')\n"
-    command+="   if provider:\n"
-    command+="      stopEdit('y')\n"
-    command+="      raise Exception('AD provider " + provider_name + " exist')\n"
-    command+="   else:\n"
-    command+="      try:\n"
-    command+="         provider = realm.createAuthenticationProvider('" + provider_name + "', '" + prov_provider_class + "')\n"
+    command+="   try:\n"
+    command+="      provider = realm.createAuthenticationProvider('" + provider_name + "', '" + prov_provider_class + "')\n"
 
     command+=generate_prov_setting(module)
 
-    command+="         save()\n"
-    command+="         activate(block='true')\n"
-    command+="      except AttributeError, e:\n"
-    command+="         stopEdit('y')\n"
-    #command+="         raise Exception ('Unknown provider attribute ' + str(e))\n"
-    command+="         print >> sys.sitderr, 'Unknown provider attribute ' + str(e)\n"
+    command+="      save()\n"
+    command+="      activate(block='true')\n"
+    command+="      rc=0\n"
+    command+="   except AttributeError, e:\n"
+    command+="      stopEdit('y')\n"
+    command+="      print >> sys.stderr, 'Unknown provider attribute ' \n"
+    command+="      rc=1\n"
+    command+="   except IllegalArgumentException, e:\n"
+    command+="      stopEdit('y')\n"
+    command+="      print >> sys.stderr, 'Unknown authentication provider' \n"
+    command+="      rc=1\n"
     command+="\n"
     command+=add_restart_reqired()
+    command+="\n"
+    command+="exit('y',rc)\n"
 
-    startd, rc, out, err, endd, delta, changed = wlst_command(module, command)
+    rc, out, err = wlst_command(module, command)
 
-    #print "---------------\n"
-    #print out + "\n"
-    #print "---------------\n"
-    #print "Error |" + err + "|\n"
-
-    if err == '' :
-       rc = 0
-    else:
-       rc = 1
+#    print "IN  ----------------------------"
+#    print command + "\n"
+#    print "OUT ----------------------------"
+#    print out + "\n"
+#    print "OUT ----------------------------"
 
     rr = check_restart_reqired(out)
 
-    return (startd, rc, y, err, endd, delta, changed,rr)
+    # Translate WLST script output code into Ansible RC and CHANGED variables    
+    if rc == 0:
+       rc = 0
+       changed = True
+       
+    if rc == 1:
+       rc = 1
+       changed = False
+
+    return (rc, out, err, changed,rr)
 
 
 
 def parameter_check_for_class(module):
-    prov_parameters = module.params['prov_parameters']
-    prov_class = module.params['prov_class']
+    provider_parameters = module.params['provider_parameters']
+    provider_class = module.params['provider_class']
 
     required_ad_list = ["setPrincipal", "setCredential"]
-    required_ad_list_counter = 0    
+    required_ad_list_counter = 0
     optional_ad_list = ["setGroupBaseDN", "setUserNameAttribute", "setUserFromNameFilter", "setUserBaseDN", "setGroupBaseDN", "setPort", "setHost"]
 
-    if ( prov_class == 'AD'):
-       for k, v in prov_parameters.iteritems():
-          if any([k in s for s in required_ad_list]): 
+    if ( provider_class == 'AD1'):
+       for k, v in provider_parameters.iteritems():
+          if any([k in s for s in required_ad_list]):
              required_ad_list_counter+=1
           elif not any([k in s for s in optional_ad_list]):
              module.fail_json(msg="Unknown AD parameter " + k)
@@ -271,44 +411,50 @@ def main():
 
     module = AnsibleModule(
         argument_spec = dict(
-            state = dict(required=True, choices=['absent', 'present', 'check']),
-            mw_home = dict(required=True),
+            state = dict(required=True, choices=['absent', 'present', 'check','order']),
+            mw_home = dict(required=False, default='/u01/app/oracle/Middleware'),
             adminServerUrl = dict(required=True),
             username = dict(required=True),
             password = dict(required=True),
-            provider_name = dict(required=True),
-            prov_setControlFlag = dict(required=False,default='OPTIONAL'),
-            prov_class = dict(required=True),
-            prov_parameters = dict(required=False, type='dict')
+            force = dict(required=False, choices=BOOLEANS),
+            wlst_output = dict(required=False, choices=BOOLEANS, default=False),
+            provider_name = dict(required=False),
+            provider_class = dict(required=False),
+            provider_parameters = dict(required=False, type='dict'),
+            provider_order = dict(required=False, type='list')
         ),
     )
 
 
     parameter_check_for_class(module)
-                
+
     state = module.params['state']
+    wlst_output = module.params['wlst_output']
 
     if state == 'present':
-        startd, rc, y, err, endd, delta, changed, isRestartRequired = create_provider(module)
-    
+        rc, out, err, changed, isRestartRequired = create_provider(module)
+
     if state == 'absent':
-        startd, rc, y, err, endd, delta, changed, isRestartRequired = remove_provider(module)
+        rc, out, err, changed, isRestartRequired = remove_provider(module)
 
     if state == 'check':
-        startd, rc, y, err, endd, delta, changed, isRestartRequired = check_provider(module)
+        rc, out, err, changed, isRestartRequired = check_provider(module)
+    
+    if state == 'order':
+        rc, out, err, changed, isRestartRequired = change_order(module)
+
+    if not wlst_output:
+        out = ''
 
     module.exit_json(
-        stdout      = y,
-        stderr      = err.rstrip("\r\n"),
+        stdout      = out,
+        stderr      = err,
         rc          = rc,
-#        start       = str(startd),
-#        end         = str(endd),
-#        delta       = str(delta),
-        isRestartRequired = isRestartRequired, 
+        isRestartRequired = isRestartRequired,
         changed     = changed
     )
 
 from ansible.module_utils.basic import *
 main()
-    
+
 
