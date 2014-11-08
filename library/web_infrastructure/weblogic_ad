@@ -48,15 +48,11 @@ def wlst_command(module, command):
 
     mw_home = module.params['mw_home'].rstrip('/')
     adminServerUrl = module.params['adminServerUrl'].strip()
-#    adminPort = module.params['adminPort'].strip()
     username = module.params['username'].strip()
     password = module.params['password'].strip()
 
     wlst_path = mw_home + "/wlserver_10.3/common/bin/wlst.sh"
     wlst_arguments = "-skipWLSModuleScanning"
-
-#    adminServerUrl = 't3s://' + adminServer + ':' + adminPort
-
 
     input="connect('" + username + "','" + password + "','" + adminServerUrl + "')\n"
     input+=command
@@ -94,13 +90,13 @@ def check_restart_reqired(out):
 
 def check_provider(module):
 
-    ad_provider_name = module.params['ad_provider_name']
+    provider_name = module.params['provider_name']
 
     startd, rc, y, err, endd, delta = (0,0,'','',0,0)
 
     command= "realm = cmo.getSecurityConfiguration().getDefaultRealm()\n"
-    command+="advalidator = realm.lookupAuthenticationProvider('" + ad_provider_name + "')\n"
-    command+="if advalidator:\n"
+    command+="provider = realm.lookupAuthenticationProvider('" + provider_name + "')\n"
+    command+="if provider:\n"
     command+="   print ('PRINTME|EXIST')\n"
     command+="else:\n"
     command+="   print ('PRINTME|ERROR')\n"
@@ -129,57 +125,41 @@ def check_provider(module):
 
     return (startd, rc, y, err, endd, delta, changed,rr)
 
-def generate_ad_setting(module):
+def generate_prov_setting(module):
 
-    ad_setControlFlag = module.params['ad_setControlFlag']
-    ad_setGroupBaseDN = module.params['ad_setGroupBaseDN']
-    ad_setUserBaseDN = module.params['ad_setUserBaseDN']
-    ad_setUserFromNameFilter = module.params['ad_setUserFromNameFilter']
-    ad_setUserNameAttribute = module.params['ad_setUserNameAttribute']
-    ad_setPrincipal = module.params['ad_setPrincipal']
-    ad_password = module.params['ad_password']
-    ad_setPort = module.params['ad_setPort']
-    ad_setHost = module.params['ad_setHost']
+    prov_prov_parameters = module.params['prov_parameters']
+    prov_setControlFlag = module.params['prov_setControlFlag']
 
+    # set Control flag - as this is mandatory in this module
     command = ''
-    if ad_setControlFlag:
-       command+="      advalidator.setControlFlag('" + ad_setControlFlag + "')\n"
-    if ad_setGroupBaseDN:
-       command+="      advalidator.setGroupBaseDN('" + ad_setGroupBaseDN + "')\n"
-    if ad_setUserBaseDN:
-       command+="      advalidator.setUserBaseDN('" + ad_setUserBaseDN + "')\n"
-    if ad_setUserFromNameFilter:
-       command+="      advalidator.setUserFromNameFilter('" + ad_setUserFromNameFilter + "')\n"
-    if ad_setUserNameAttribute:
-       command+="      advalidator.setUserNameAttribute('" + ad_setUserNameAttribute + "')\n"
-    if ad_setPrincipal:
-       command+="      advalidator.setPrincipal('" + ad_setPrincipal + "')\n"
-    if ad_password:
-       command+="      advalidator.setCredential('" + ad_password + "')\n"
-    if ad_setPort:
-       command+="      advalidator.setPort(" + str(ad_setPort) + ")\n"
-    if ad_setHost:
-       command+="      advalidator.setHost('" + ad_setHost + "')\n"
+    command+="         provider.setControlFlag('" + prov_setControlFlag + "')\n"
+
+    # set rest of module paramaters provided as dict module
+    # example provider.setPriciple('user')
+                
+    for key, value in prov_prov_parameters.iteritems() :
+       command+="         provider." + key + "('" + value + "')\n"
 
     return command
 
 
 def remove_provider(module):
 
-    ad_provider_name = module.params['ad_provider_name']
+    provider_name = module.params['provider_name']
 
     startd, rc, y, err, endd, delta = (0,0,'','',0,0)
 
     command ="realm = cmo.getSecurityConfiguration().getDefaultRealm()\n"
-    command+="advalidator = realm.lookupAuthenticationProvider('" + ad_provider_name + "')\n"
-    command+="if not advalidator:\n"
-    command+="   raise Exception('AD provider " + ad_provider_name + " doesn''t exist')\n"
+    command+="provider = realm.lookupAuthenticationProvider('" + provider_name + "')\n"
+    command+="if not provider:\n"
+    #command+="   raise Exception('AD provider " + provider_name + " doesn''t exist')\n"
+    command+="   print >> sys.stderr, 'AD provider " + provider_name + " doesn''t exist'\n"
     command+="else:\n"
     command+="   edit()\n"
     command+="   startEdit()\n"
     command+="   realm = cmo.getSecurityConfiguration().getDefaultRealm()\n"
-    command+="   advalidator = realm.lookupAuthenticationProvider('" + ad_provider_name + "')\n"
-    command+="   realm.destroyAuthenticationProvider(advalidator);\n"
+    command+="   provider = realm.lookupAuthenticationProvider('" + provider_name + "')\n"
+    command+="   realm.destroyAuthenticationProvider(provider);\n"
     command+="   save()\n"
     command+="   activate(block='true')\n"
     command+="\n"
@@ -187,11 +167,11 @@ def remove_provider(module):
 
     startd, rc, out, err, endd, delta, changed = wlst_command(module, command)
 
-    print command + "\n"
-    print "---------------\n"
-    print out + "\n"
-    print "---------------\n"
-    print "Error |" + err + "|\n"
+    #print command + "\n"
+    #print "---------------\n"
+    #print out + "\n"
+    #print "---------------\n"
+    #print "Error |" + err + "|\n"
 
     if err == '' :
        rc = 0
@@ -203,43 +183,57 @@ def remove_provider(module):
 
     return (startd, rc, y, err, endd, delta, changed, rr)
 
+                
+def check_provider_class( class_name ):
+    wls_class_name = class_name
+                
+    if ( class_name == 'AD'):
+       wls_class_name = 'weblogic.security.providers.authentication.ActiveDirectoryAuthenticator';
 
+    return wls_class_name
 
 def create_provider(module):
 
-    ad_provider_name = module.params['ad_provider_name']
+    provider_name = module.params['provider_name']
+    prov_provider_class = module.params['prov_class']
+                
+    prov_provider_class = check_provider_class ( prov_provider_class )
 
     startd, rc, y, err, endd, delta = (0,0,'','',0,0)
 
     command ="realm = cmo.getSecurityConfiguration().getDefaultRealm()\n"
-    command+="advalidator = realm.lookupAuthenticationProvider('" + ad_provider_name + "')\n"
-    command+="if advalidator:\n"
-    command+="  raise Exception('AD provider " + ad_provider_name + " exist')\n"
+    command+="provider = realm.lookupAuthenticationProvider('" + provider_name + "')\n"
+    command+="if provider:\n"
+    command+="  raise Exception('AD provider " + provider_name + " exist')\n"
     command+="else:\n"
     command+="   edit()\n"
     command+="   startEdit()\n"
     command+="   realm = cmo.getSecurityConfiguration().getDefaultRealm()\n"
-    command+="   advalidator = realm.lookupAuthenticationProvider('" + ad_provider_name + "')\n"
-    command+="   if advalidator:\n"
+    command+="   provider = realm.lookupAuthenticationProvider('" + provider_name + "')\n"
+    command+="   if provider:\n"
     command+="      stopEdit('y')\n"
-    command+="      raise Exception('AD provider " + ad_provider_name + " exist')\n"
+    command+="      raise Exception('AD provider " + provider_name + " exist')\n"
     command+="   else:\n"
-    command+="      advalidator = realm.createAuthenticationProvider('" + ad_provider_name + "', 'weblogic.security.providers.authentication.ActiveDirectoryAuthenticator')\n"
+    command+="      try:\n"
+    command+="         provider = realm.createAuthenticationProvider('" + provider_name + "', '" + prov_provider_class + "')\n"
 
-    command+=generate_ad_setting(module)
+    command+=generate_prov_setting(module)
 
-    command+="      save()\n"
-    command+="      activate(block='true')\n"
+    command+="         save()\n"
+    command+="         activate(block='true')\n"
+    command+="      except AttributeError, e:\n"
+    command+="         stopEdit('y')\n"
+    #command+="         raise Exception ('Unknown provider attribute ' + str(e))\n"
+    command+="         print >> sys.sitderr, 'Unknown provider attribute ' + str(e)\n"
     command+="\n"
     command+=add_restart_reqired()
 
     startd, rc, out, err, endd, delta, changed = wlst_command(module, command)
 
-    print command + "\n"
-    print "---------------\n"
-    print out + "\n"
-    print "---------------\n"
-    print "Error |" + err + "|\n"
+    #print "---------------\n"
+    #print out + "\n"
+    #print "---------------\n"
+    #print "Error |" + err + "|\n"
 
     if err == '' :
        rc = 0
@@ -250,6 +244,25 @@ def create_provider(module):
 
     return (startd, rc, y, err, endd, delta, changed,rr)
 
+
+
+def parameter_check_for_class(module):
+    prov_parameters = module.params['prov_parameters']
+    prov_class = module.params['prov_class']
+
+    required_ad_list = ["setPrincipal", "setCredential"]
+    required_ad_list_counter = 0    
+    optional_ad_list = ["setGroupBaseDN", "setUserNameAttribute", "setUserFromNameFilter", "setUserBaseDN", "setGroupBaseDN", "setPort", "setHost"]
+
+    if ( prov_class == 'AD'):
+       for k, v in prov_parameters.iteritems():
+          if any([k in s for s in required_ad_list]): 
+             required_ad_list_counter+=1
+          elif not any([k in s for s in optional_ad_list]):
+             module.fail_json(msg="Unknown AD parameter " + k)
+
+       if ( required_ad_list_counter != len(required_ad_list) ):
+             module.fail_json(msg="Put all required AD parameters " + ','.join(required_ad_list))
 
 
 
@@ -263,27 +276,17 @@ def main():
             adminServerUrl = dict(required=True),
             username = dict(required=True),
             password = dict(required=True),
-            ad_provider_name = dict(required=True),
-            ad_setControlFlag = dict(required=False,default='OPTIONAL'),
-            ad_setGroupBaseDN = dict(required=False),
-            ad_setUserBaseDN = dict(required=False),
-            ad_setUserFromNameFilter = dict(required=False),
-            ad_setUserNameAttribute = dict(required=False),
-            ad_setPrincipal = dict(required=False),
-            ad_password = dict(required=False),
-            ad_setPort = dict(required=False),
-            ad_setHost = dict(required=False)
+            provider_name = dict(required=True),
+            prov_setControlFlag = dict(required=False,default='OPTIONAL'),
+            prov_class = dict(required=True),
+            prov_parameters = dict(required=False, type='dict')
         ),
     )
 
 
+    parameter_check_for_class(module)
+                
     state = module.params['state']
-    ad_setPrincipal = module.params['ad_setPrincipal']
-    ad_password = module.params['ad_password']
-
-    if (state == 'present') and ((not ad_setPrincipal) or (not ad_password)) :
-        module.fail_json(msg="Arguments 'ad_setPrincipal','ad_password' required for state present.")
-
 
     if state == 'present':
         startd, rc, y, err, endd, delta, changed, isRestartRequired = create_provider(module)
@@ -293,8 +296,6 @@ def main():
 
     if state == 'check':
         startd, rc, y, err, endd, delta, changed, isRestartRequired = check_provider(module)
-
-
 
     module.exit_json(
         stdout      = y,
@@ -309,3 +310,5 @@ def main():
 
 from ansible.module_utils.basic import *
 main()
+    
+
