@@ -23,39 +23,27 @@ module: weblogic_bsu
 version_added: devel
 short_description: apply patch to weblogic 
 options:
-  AdminServerURL:
-    description:
-      - Admin server URL (t3 or http) 
-    required: true
-    default: null
 
-  Action:
-    description:
-      - install / remove / check
 
 author: Marcin Przepiorowski 
 '''
 
 EXAMPLES = '''
-# Show active sessions for instance RAC1 on 'dbserver'
 '''
 
 def bsu_check(module):
     
-    startd, rc, weblogic_patch, err, endd, delta,changed  = (0,1,'','',0,0,False)
+    rc, weblogic_patch, err, changed  = (0,'','',False)
     mw_home = module.params['mw_home'].rstrip('/') 
     req_patch_id = module.params['patch_id'].strip()
 
     wls_server_path = mw_home + "/wlserver_10.3"
     bsu_path = mw_home + "/utils/bsu"
     
-    startd = datetime.datetime.now()
-    rc, out, err = module.run_command(["./bsu.sh","-view","-status=applied","-prod_dir=" + wls_server_path ], check_rc=True, cwd=bsu_path)
-    endd = datetime.datetime.now()
-    delta = endd - startd
+    rc, out, err = module.run_command(["./bsu.sh","-view","-status=applied","-prod_dir=" + wls_server_path ], cwd=bsu_path)
     # return if error
     if (rc <> 0):
-       return (startd, rc, out, err, endd, delta, changed)
+       return (rc, out, err, changed)
 
     # set rc to 1 to fail if there is no patch
     rc = 1
@@ -71,7 +59,76 @@ def bsu_check(module):
         
 
        
-    return (startd, rc, out, err, endd, delta, changed) 
+    return (rc, out, err, changed) 
+
+def bsu_install(module):
+
+    rc, weblogic_patch, err, changed, conflicts  = (0,'','',False,'')
+    mw_home = module.params['mw_home'].rstrip('/')
+    req_patch_id = module.params['patch_id'].strip()
+
+    wls_server_path = mw_home + "/wlserver_10.3"
+    bsu_path = mw_home + "/utils/bsu"
+
+    rc, out, err = module.run_command(["./bsu.sh","-install","-patchlist=" + req_patch_id,"-prod_dir=" + wls_server_path ], cwd=bsu_path)
+    # return if error
+    if (rc <> 0):
+       return (rc, out, err, changed)
+
+    # set rc to 1 to fail if there is no patch
+    rc = 1
+    for i in out.split("\n"):
+       if ( "Result: Success" in i):
+          rc = 0
+          changed = True
+       if ( "Patch already installed:" in i):
+          temp_patch_id=i.split(':')[1].strip()
+          if (temp_patch_id == req_patch_id):
+             rc = 0
+             changed = False
+       if ( "mutually exclusive and cannot coexist with patch" in i):
+          temp_patch_id=i.split(':')[1].strip()
+          rc = 1
+          changed = False
+          conflicts = temp_patch_id
+
+
+
+    return (rc, out, err, changed, conflicts)
+
+def bsu_remove(module, force_patch_id):
+
+    rc, weblogic_patch, err, changed, conflicts  = (0,'','',False,'')
+    mw_home = module.params['mw_home'].rstrip('/')
+    req_patch_id = module.params['patch_id'].strip()
+
+    if force_patch_id:
+       req_patch_id = force_patch_id
+
+    wls_server_path = mw_home + "/wlserver_10.3"
+    bsu_path = mw_home + "/utils/bsu"
+
+    rc, out, err = module.run_command(["./bsu.sh","-remove","-patchlist=" + req_patch_id,"-prod_dir=" + wls_server_path ], cwd=bsu_path)
+    # return if error
+    if (rc <> 0):
+       return (rc, out, err, changed)
+
+    # set rc to 1 to fail if there is no patch
+    rc = 1
+    for i in out.split("\n"):
+       if ( "Result: Success" in i):
+          rc = 0
+          changed = True
+       if ( "Patch not installed:" in i):
+          temp_patch_id=i.split(':')[1].strip()
+          if (temp_patch_id == req_patch_id):
+             rc = 0
+             changed = False
+
+
+    return (rc, out, err, changed, conflicts)
+
+	
  
 
 
@@ -82,7 +139,7 @@ def main():
             operation = dict(required=True, choices=['install', 'remove', 'check']),
             mw_home = dict(required=True),
             patch_id = dict(required=True),
-            src = dict(required=True)
+            force = dict(required=False, choices=BOOLEANS, default=False)
         ),
     )
 
@@ -92,22 +149,30 @@ def main():
     mw_home = module.params['mw_home']
     operation = module.params['operation']
     patch_id = module.params['patch_id']
+    force = module.params['force']
 
 
-
-    #startd, rc, y, err, endd, delta = wlst_command(module, 'weblogic','Oracle42','t3s://dg2.localdomain:7102', command)
-    
     if (operation == 'check'):
-       startd, rc, y, err, endd, delta, changed = bsu_check(module) 
+       rc, out, err, changed = bsu_check(module) 
 
+
+    if (operation == 'install'):
+       rc, out, err, changed, conflicts = bsu_install(module) 
+       if force and (conflicts != ''):
+          for p in conflicts.split(','):
+             rc, out, err, changed, conflicts = bsu_remove(module,p)
+             if rc != 0:
+                module.fail_json(msg='Can''t remove patch ' + p + ' in force mode')
+          rc, out, err, changed, conflicts = bsu_install(module)
+
+
+    if (operation == 'remove'):
+       rc, out, err, changed, conflicts = bsu_remove(module, None) 
 
     module.exit_json(
-        stdout      = y,
-        stderr      = err.rstrip("\r\n"),
+        stdout      = out,
+        stderr      = err,
         rc          = rc,
-        start       = str(startd),
-        end         = str(endd),
-        delta       = str(delta),
         changed     = changed 
     )
 
